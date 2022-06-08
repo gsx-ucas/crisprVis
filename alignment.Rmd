@@ -1,0 +1,69 @@
+---
+title: "Untitled"
+author: "Shixue Gou"
+date: "2020/6/14"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(ShortRead)
+library(Biostrings)
+```
+
+```{r}
+reads <- readFastq("../IGE2020042002/X101SC20041135-Z02-J001/rawdata/SH0420-CTTGTACT-GAGCCTTA_BKDL202572990-1a-AK603-AK425_1.fq.gz")
+sequences <- sread(reads) # extract reads
+sequences %>% head(6)
+```
+
+```{r}
+ref <- DNAString("ACTCCGACTCCGAGCAGTCTCTGTCCTTCGACCCGAGCCCCGCGCCCTTTCCGGGACCCCTGCCCCGCGGGCAGCGCTGCCAACCTGCCGGCCATGGAGACCCCGTCCCAGCGGCGCGCCACCCGCAGCGGGGCGCAGGCCAGCTCCACTCCGCTGTCGCCCACCCGCATCACCCGGCTGCAGGAGAAGGAGGACCT")
+```
+
+```{r}
+# First use a fixed substitution matrix
+mat <- nucleotideSubstitutionMatrix(match = 1, mismatch = -3, baseOnly = TRUE)
+globalAlign <- pairwiseAlignment(pattern = ref, subject = sequences[[1]], substitutionMatrix = mat,
+                      gapOpening = 5, gapExtension = 2)
+globalAlign
+```
+
+```{r}
+align_results <- lapply(sequences, function(x){
+  globalAlign <- pairwiseAlignment(pattern = ref, subject = sequences[[1]], substitutionMatrix = mat,
+                      gapOpening = 5, gapExtension = 2)
+  df <- data.frame(Ref = alignedPattern(globalAlign) %>% toString, 
+                   Alg = alignedSubject(globalAlign) %>% toString, 
+                   Score = score(globalAlign)
+                   )
+}) %>% bind_rows()
+```
+
+```{r}
+Biostrings::alignedPattern(globalAlign)
+Biostrings::alignedSubject(globalAlign)
+Biostrings::aligned(globalAlign)
+Biostrings::score(globalAlign)
+```
+
+
+
+```{r}
+## Nucleotide global, local, and overlap alignments
+s1 <- DNAString("ACTTCACCAGCTCCCTGGCGGTAAGTTGATCAAAGGAAACGCAAAGTTTTCAAG")
+s2 <- DNAString("ACTTCACCAGCTCCCTGGCGGTAAGTTGATCAAAGGAAACGCAAAGTTTTCAAG")
+
+# First use a fixed substitution matrix
+mat <- nucleotideSubstitutionMatrix(match = 1, mismatch = -3, baseOnly = TRUE)
+
+globalAlign <- pairwiseAlignment(s1, s2, substitutionMatrix = mat,
+                      gapOpening = 5, gapExtension = 2)
+
+localAlign <- pairwiseAlignment(s1, s2, type = "local", substitutionMatrix = mat,
+                      gapOpening = 5, gapExtension = 2)
+
+overlapAlign <- pairwiseAlignment(s1, s2, type = "overlap", substitutionMatrix = mat,
+                      gapOpening = 5, gapExtension = 2)
+```
+

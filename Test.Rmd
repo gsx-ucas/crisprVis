@@ -1,0 +1,283 @@
+---
+title: "Untitled"
+author: "Shixue Gou"
+date: "2020/6/9"
+output: html_document
+---
+```{r}
+library(pheatmap)
+library(ggplot2)
+# library("ggmsa")
+source("functions.R")
+library(stringi)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(Biostrings)
+```
+
+```{r}
+data <- read.csv("inst/extdata/MHQuant_results/MHQuant_results.csv", 
+           sep = ",", header = T, row.names = 1, check.names = F)
+# colnames(data) <- c(colnames(data)[-1], "reads_percentage")
+data
+```
+
+```{r}
+plotData <- data[grep(data$ReferenceSequence, pattern = "[A-Z]-.*-[A-Z]", invert = T), ]
+plotData <- plotData[1:20, ]
+plotData
+```
+
+```{r}
+L <- str_remove_all(string = plotData$ReferenceSequence, pattern = "[A-Z].*") %>% nchar()
+R <- str_remove_all(string = plotData$ReferenceSequence, pattern = ".*[A-Z]") %>% nchar()
+
+MutantSequence <- plotData$MutantSequence %>% as.character
+MutantSequence <- lapply(1:length(MutantSequence), function(x){
+  substr(MutantSequence[x], start = L[x] + 1, stop = nchar(MutantSequence[x]) - R[x])
+}) %>% unlist()
+
+ReferenceSequence <- str_remove_all(plotData$ReferenceSequence[1] %>% as.character, pattern = "-")
+```
+
+
+
+```{r}
+# string_highlight <- any(grepl(x = string_list[[2]], pattern = "-"))
+# string_list <- plotData$Aligned_Sequence  %>% str_split(pattern = "")
+# 
+# string_list[[1]] == string_list[[3]]
+# 
+# 
+
+
+```
+
+
+```{r}
+plotDf <- c(ReferenceSequence, MutantSequence) %>% str_split(pattern = "") %>% as.data.frame(stringsAsFactors = F) %>% t %>% as.data.frame(row.names = NULL, stringsAsFactors = F)
+
+rownames(plotDf) <- dim(plotDf)[1]:1
+labels_y <- c(1000000, plotData$NumberOfReads)
+
+
+colnames(plotDf) <- 1:dim(plotDf)[2] 
+
+
+plotDf$id_var <- dim(plotDf)[1]:1
+
+
+plotDf <- reshape2::melt(plotDf, id.vars = "id_var")
+colnames(plotDf) <- c("name", "position", "character")
+plotDf$position <- as.numeric(plotDf$position)
+# plotDf$color <- plotDf$value
+# plotDf[plotDf$value == "A", "color"] <- "#3CB371"
+# plotDf[plotDf$value == "T", "color"] <- "#8B658B"
+# plotDf[plotDf$value == "C", "color"] <- "#FF8C00"
+# plotDf[plotDf$value == "G", "color"] <- "#FFFF00"
+# plotDf[plotDf$value == "-", "color"] <- "#696969"
+plotDf %>% head()
+```
+
+```{r fig.height=10, fig.width=20}
+ggplot(data = plotDf)+
+  geom_tile(aes(x = position, y = name, fill = character), alpha=0.5, inherit.aes = FALSE)+
+  # geom_rect(aes(xmin = position - 0.5, xmax = position + 0.5, ymin = name - 0.5, ymax = name + 0.5, fill = character), col = "red", alpha=0.1, inherit.aes = TRUE)+
+  geom_text(aes(x = position, y = name, label = character), inherit.aes = FALSE)+
+  scale_y_continuous(labels = labels_y %>% rev, breaks = 1:21, limits = c(0, 21))+
+  scale_fill_manual(values = c("white", "#3CB371", "#FF8C00", "#FFFF00", "#8B658B")) +
+  theme_light()+
+  theme(panel.border = element_blank(), axis.title = element_blank(), axis.ticks = element_blank(), axis.text.x = element_blank())
+```
+
+```{r}
+MHQuant_CRISPResso2 <- function(directory){
+  file <- paste0(directory, "/Alleles_frequency_table.zip")
+  if (!file.exists(file)) {
+    stop("File Alleles_frequency_table.zip does not exist, please check your output of CRISPResso2 ...")
+  }else {
+    df <- read.csv(unzip("./Alleles_frequency_table.zip"), sep = "\t", header = T)
+
+    ## 选择indel序列
+    data <- subset(df, n_deleted > 0)
+    
+    strings <- strsplit(data$Aligned_Sequence, "-")
+    logical_list <- lapply(strings, function(x){
+      str_tab <- table(nchar(x) > 0)
+      if (unname(str_tab[2]) > 2) {
+        return(FALSE)
+      }else {
+        return(TRUE)
+      }
+    }) %>% unlist
+    data <- data[logical_list, ]
+    
+    results_int <- NULL
+    
+    for (i in 1:nrow(data)) {
+      df <- data[i, ]
+      index_out <- index(df$Aligned_Sequence, df$Reference_Sequence)
+      simple_out <- is.simple(index_out)
+      if (!simple_out) {
+        next
+      }else {
+        mut_prep_out <- is.mut.prep(index_out)
+        is_mutated <- is.mutated(a = mut_prep_out$Del_test, 
+                                 b = mut_prep_out$Ref_test, exclude = "-")
+        if (is_mutated) {
+          next
+        }else {
+          MHSeqSize <- MHQuant.prep1(index_out)
+          MHQuant_seqs <- MHQuant.prep2(index_out, MHSeqSize)
+          MHQuant_out <- MHQuant_sub(MHQuant_seqs)
+          MHSeq_out <- MHSeq.return(MHQuant_out, index_out)
+        }
+        if (MHSeq_out == "No_MH") {
+          altMH_out <- "No_MH"
+        }else {
+          altMH_out <- altMH(MHSeq_out, index_out)
+        }
+        
+        results_int <- rbind(results_int, data.frame(MutantSequence = index_out$delSeq, 
+                                                     ReferenceSequence = index_out$refSeq, SizeOfDeletion = df$n_deleted, 
+                                                     NumberOfReads = df$X.Reads, MH_amount = MHQuant_out$max_MH, 
+                                                     MH_sequence = MHSeq_out, altMH_count = altMH_out))
+        results_int <- results_int[results_int$MH_sequence != "No_MH", ]
+      }
+    }
+    dir.create(paste0(directory, "/MHQuant_results"), recursive = T)
+    output_file <- paste0(directory, "/MHQuant_results/MHQuant_results.csv")
+    write.csv(results_int, output_file)
+    return(results_int) 
+  }
+}
+
+MHQuant_CRISPResso2("CRISPResso_on_Rosa-R-E1B-2/")
+```
+
+```{r}
+MHQuant_results <- read.csv("CRISPResso_on_Rosa-R-E1B-2/MHQuant_results/MHQuant_results.csv", row.names = 1)
+
+log_idx <- lapply(1:dim(MHQuant_results)[1], function(x){
+  all((as.data.frame(MHQuant_results[x, "MutantSequence"] %>% str_locate_all(pattern = "-"))[, 1] %>% diff) == 1)
+}) %>% unlist
+
+MHQuant_results <- MHQuant_results[log_idx, ]
+
+MHQuant_results$SOI <- lapply(1:dim(MHQuant_results)[1], function(x){
+  min_idx <- as.data.frame(MHQuant_results[x, "MutantSequence"] %>% str_locate_all(pattern = "-"))[, 1] %>% min
+  max_idx <- as.data.frame(MHQuant_results[x, "MutantSequence"] %>% str_locate_all(pattern = "-"))[, 1] %>% max
+  soi <- substr(MHQuant_results[x, "MutantSequence"], min_idx - 10, max_idx + 10)
+}) %>% unlist
+
+MHQuant_results$dup_idx <- paste(MHQuant_results$SOI, MHQuant_results$MH_sequence, sep = "_")
+
+simple_rsults <- lapply(MHQuant_results$dup_idx %>% unique, function(x){
+  df <- MHQuant_results[MHQuant_results$dup_idx == x, ]
+  if (length(which(df$NumberOfReads == max(df$NumberOfReads))) > 1) {
+    max_idx <- 1
+  }else {
+    max_idx <- which(df$NumberOfReads == max(df$NumberOfReads))
+  }
+  
+  SizeOfDeletion <- df[max_idx, "SizeOfDeletion"]
+  MH_amount <- df[max_idx, "MH_amount"]
+  MH_sequence <- df[max_idx, "MH_sequence"]
+  altMH_count <- df[max_idx, "altMH_count"]
+  
+  Seq <- df[max_idx, "MutantSequence"]
+  Ref <- df[max_idx, "ReferenceSequence"]
+  NOR <- (df %>% group_by(dup_idx) %>% summarise_at(sum, .vars = c("NumberOfReads")))$NumberOfReads
+  
+  data.frame(MutantSequence = Seq, ReferenceSequence = Ref, SizeOfDeletion = SizeOfDeletion, NumberOfReads = NOR, MH_amount = MH_amount, MH_sequence = MH_sequence, altMH_count = altMH_count, dup_idx = x)
+}) %>% bind_rows()
+
+simple_rsults <- simple_rsults[simple_rsults$NumberOfReads %>% order(decreasing = T), ]
+
+simple_rsults %>% head(2)
+```
+```{r fig.height=10, fig.width=20}
+gRNA <- "CGCGTGATCTCGTCATCGCC"
+extend_len <- 40
+top_n <- 50
+seq_len <- nchar(gRNA) + 40 * 2
+gRNA_pos <- c(extend_len + 1, seq_len - extend_len)
+
+simple_rsults$plot_region <- lapply(1:dim(simple_rsults)[1], function(x){
+  pos_start <- str_locate_all(simple_rsults$ReferenceSequence[x], pattern = gRNA)[[1]][1]
+  pos_end <- str_locate_all(simple_rsults$ReferenceSequence[x], pattern = gRNA)[[1]][2]
+  substr(simple_rsults$MutantSequence[x], pos_start - extend_len, pos_end + extend_len)
+}) %>% unlist
+
+CRISPResso_quant_table <- read.csv("CRISPResso_on_Rosa-R-E1B-2/CRISPResso_quantification_of_editing_frequency.txt", check.names = F, sep = "\t")
+
+indel_number <- CRISPResso_quant_table$Deletions + CRISPResso_quant_table$Insertions - CRISPResso_quant_table$`Insertions and Deletions`
+
+simple_rsults$freq <- round(simple_rsults$NumberOfReads / indel_number * 100, digits = 2)
+
+topn_data <- simple_rsults %>% head(top_n) # get top n rows to plot
+topn_data$ylim <- 1:top_n # add a ylim column for spliting and plotting data in the y.axis
+  
+# preparing the data for plotting
+align_split <- lapply(1:top_n, function(x){
+  align_strs <- topn_data[topn_data$ylim == x, "plot_region"]
+  str_split(align_strs, "")[[1]]
+}) %>% as.data.frame() # split the characters in aligned sequence to single base in Alignseq
+
+colnames(align_split) <- 1:top_n # rename the columns
+rownames(align_split) <- 1:seq_len # rename the rows
+
+align_split <- align_split %>% as.matrix() %>% reshape2::melt() # melt the data frame to long data format
+colnames(align_split) <- c("xlim", "ylim", "align_seq") # rename the columns after melt
+
+align_split[align_split$align_seq == "-", "label"] = "Deletions" # label 'Deletions'
+
+ref_start <- str_locate_all(simple_rsults$ReferenceSequence[1], pattern = gRNA)[[1]][1]
+ref_end <- str_locate_all(simple_rsults$ReferenceSequence[1], pattern = gRNA)[[1]][2]
+ref_seq <- substr(simple_rsults$ReferenceSequence[1], ref_start - extend_len, ref_end + extend_len) %>% strsplit("")
+reference_header <- data.frame(xlim = 1:seq_len, ylim = 1, align_seq = ref_seq, label = "WT")
+colnames(reference_header) <- c("xlim", "ylim", "align_seq", "label")
+
+align_split$ylim <- align_split$ylim + 2 # move down three rows for the plotting data
+blank_title <- rbind(data.frame(xlim = 1:seq_len, ylim = 2, align_seq = NA, label = NA)) # add two blank row
+
+add_header <- rbind(reference_header, blank_title) # merge the first three row as header before plotting data
+plot_data <- rbind(add_header, align_split) # merge header and plotting data 
+
+plot_data$xlim <- factor(plot_data$xlim, levels = as.character(1:seq_len)) # as.factor to order the x.axis
+plot_data$ylim <- factor(plot_data$ylim, levels = as.character((top_n+2):1)) # as.factor to order the y.axis
+
+y_lables <- c("Reference", "gRNA", paste0(topn_data$freq, "% (", topn_data$NumberOfReads, ")")) # prepare y.axis.text labels
+
+p <- ggplot(plot_data, aes(xlim, ylim, fill = align_seq))+
+  geom_tile(alpha=0.6, colour = "white", show.legend = F)+
+  geom_text(aes(label = align_seq))+
+  geom_rect(aes(xmin = gRNA_pos[1] - 0.5, xmax = gRNA_pos[2] + 0.5, ymin = top_n + 1.1, ymax = top_n + 1.4 ), fill = "lightgrey",alpha = 0.6)
+
+p <- p + scale_y_discrete(breaks = as.character(c(1:2, 3:(top_n + 2))), labels = y_lables, position = "right")+
+    scale_fill_manual(breaks = c("-", "A", "C", "G", "T"), values = c("#FFFFFF", "#41AB5D", "#4192C6", "#FED976", "#EF3B2C"))+
+    theme_linedraw()+
+    theme(legend.position = "bottom",
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.text.y = element_text(size = 10),
+          panel.grid.major = element_blank(),
+          panel.border = element_blank(),
+          panel.background = element_blank())
+p
+
+```
+
+
+```{r}
+library(MHscan2)
+```
+
+```{r fig.height=10, fig.width=20, paged.print=FALSE}
+plotMHseqs(inputfile = "/Volumes/RunData/CRISPResso2/ShiHui/Test_Rosa-R-ECHE-2/Reports/MHEJ_Output/Rosa-R-E1B-2/Rosa-R-E1B-2_simpified_MHQuant_table.csv", 
+           gRNA = "CGCGTGATCTCGTCATCGCC", extend_len = 40, top_n = 50)
+```
+
