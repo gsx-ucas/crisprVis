@@ -1,0 +1,376 @@
+---
+title: "MMEJ"
+author: "Shixue Gou"
+date: "2022/6/15"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(progress)
+
+
+file <- paste0('inst/extdata/HT-ROSA-MMEJ_data/Reports/CRISPResso_on_Rosa-MMEJ-1and2-Cas9-1/', "/Alleles_frequency_table.zip")
+
+data <- data.frame(read.delim(unzip(file), header = T, sep = "\t", check.names = F))
+data <- data[data$Read_Status == "MODIFIED" & data$n_deleted > 0 & 
+               data$n_inserted < 1 & data$n_mutated < 1 & grepl("-", data$Aligned_Sequence, fixed = T), ]
+pb <- progress_bar$new(total = nrow(data), clear = FALSE)
+
+MMSeq_Df <- lapply(1:nrow(data), function(x, pb = pb){
+  
+  pb$tick()
+  
+  del_pos <- data$Aligned_Sequence[x] %>% stringr::str_locate_all("-+") %>% as.data.frame()
+  
+  del_seqs <- substring(data$Reference_Sequence[x], first = del_pos$start, last = del_pos$end)
+  left_seqs <- substring(data$Reference_Sequence[x], first = del_pos$start - (del_pos$end - del_pos$start) - 1, last = del_pos$start - 1)
+  right_seqs <- substring(data$Reference_Sequence[x], first = del_pos$end + 1, last = del_pos$end + (del_pos$end - del_pos$start) + 1)
+  
+  check_left <- lapply(1:length(del_seqs), function(x){
+    
+    if (nchar(left_seqs[x]) < nchar(del_seqs[x])) {
+      n_iters <- nchar(left_seqs[x])
+    }else {
+      n_iters <- nchar(del_seqs[x])
+    }
+    
+    MMSeq_len <- 0
+    
+    for (i in 1:n_iters) {
+      del_seq <- substr(del_seqs[x], start = i, stop = i)
+      left_seq <- substr(left_seqs[x], start = i, stop = i)
+      if (del_seq == left_seq) {
+        MMSeq_len <- MMSeq_len + 1
+      }else {
+        MMSeq_len <- 0
+      }
+    }
+    if (MMSeq_len == 0) {
+      return(NULL)
+    }else {
+      return(substr(del_seqs[x], start = nchar(del_seqs[x]) - MMSeq_len + 1, stop = nchar(del_seqs[x])))
+    }
+  })
+  
+  check_right <- lapply(1:length(del_seqs), function(x){
+    
+    if (nchar(right_seqs[x]) < nchar(del_seqs[x])) {
+      n_iters <- nchar(right_seqs[x])
+    }else {
+      n_iters <- nchar(del_seqs[x])
+    }
+    
+    MMSeq_len <- 0
+    
+    for (i in n_iters:1) {
+      del_seq <- substr(del_seqs[x], start = i, stop = i)
+      right_seq <- substr(right_seqs[x], start = i, stop = i)
+      if (del_seq == right_seq) {
+        MMSeq_len <- MMSeq_len + 1
+      }else {
+        MMSeq_len <- 0
+      }
+    }
+    if (MMSeq_len == 0) {
+      return(NULL)
+    }else {
+      return(substr(del_seqs[x], start = 1, stop = MMSeq_len))
+    }
+  })
+
+  MM_df <- lapply(1:length(del_seqs), function(x){
+    if (!is.null(check_left[[x]]) | !is.null(check_right[[x]])) {
+      MM_seq <- c(check_left[[x]], check_right[[x]]) %>% sort() %>% paste(collapse = ",")
+      del_seqs <- del_seqs[x]
+      df <- data.frame(MM_seq = MM_seq, del_seqs = del_seqs)
+    }else {
+      df <- data.frame(MM_seq = "NA", del_seqs = "NA")
+    }
+    return(df)
+  }) %>% bind_rows()
+  
+  if (dim(MM_df)[1] > 1) {
+    MM_df <- MM_df[MM_df$MM_seq != "NA", ]
+  }
+
+  return(data.frame(MMSeqs = MM_df$MM_seq %>% paste(collapse = ","), DelSeqs = MM_df$del_seqs %>% paste(collapse = ",")))
+}) %>% dplyr::bind_rows()
+
+data$DelSeqs <- MMSeq_Df$DelSeqs
+data$MMSeqs <- MMSeq_Df$MMSeqs
+data <- data[MMSeq_Df$MMSeqs != "NA", ]
+
+data$MMCount <- lapply(data$MMSeqs, function(x){
+  n_count <- stringr::str_split(x, ",") %>% unlist() %>% nchar()
+  if (length(n_count) > 1) {
+    n_count <- paste(n_count, collapse = ",")
+  }
+  return(n_count)
+}) %>% unlist()
+```
+
+```{r}
+library(tidyverse)
+library(parallel)
+library(progress)
+file <- paste0('inst/extdata/HT-ROSA-MMEJ_data/Reports/CRISPResso_on_Rosa-MMEJ-1and2-Cas9-1/', "/Alleles_frequency_table.zip")
+
+data <- read.csv(unzip(file), header = T, sep = "\t", check.names = F)
+data <- data[data$Read_Status == "MODIFIED" & data$n_deleted > 0 & 
+               data$n_inserted < 1 & data$n_mutated < 1 & grepl("-", data$Aligned_Sequence, fixed = T), ]
+
+indel_total_number <- data$`#Reads` %>% sum
+
+pb <- progress_bar$new(total = nrow(data), clear = FALSE)
+
+cl <- makeCluster(8)
+
+clusterExport(cl, "data")
+clusterExport(cl, "pb")
+# clusterExport(cl, library(stringr))
+# clusterExport(cl, library(progress))
+# clusterExport(cl, library(tidyverse))
+# clusterExport(cl, library(dplyr))
+
+MMSeq_Df <- parLapply(cl, 1:nrow(data), function(x){
+  require(dplyr)
+  require(stringr)
+  # require(progress)
+  require(tidyverse)
+  
+  pb$tick()
+  
+  del_pos <- data$Aligned_Sequence[x] %>% stringr::str_locate_all("-+") %>% as.data.frame()
+  
+  del_seqs <- substring(data$Reference_Sequence[x], first = del_pos$start, last = del_pos$end)
+  left_seqs <- substring(data$Reference_Sequence[x], first = del_pos$start - (del_pos$end - del_pos$start) - 1, last = del_pos$start - 1)
+  right_seqs <- substring(data$Reference_Sequence[x], first = del_pos$end + 1, last = del_pos$end + (del_pos$end - del_pos$start) + 1)
+  
+  check_left <- lapply(1:length(del_seqs), function(x){
+    
+    if (nchar(left_seqs[x]) < nchar(del_seqs[x])) {
+      n_iters <- nchar(left_seqs[x])
+    }else {
+      n_iters <- nchar(del_seqs[x])
+    }
+    
+    MMSeq_len <- 0
+    
+    for (i in 1:n_iters) {
+      del_seq <- substr(del_seqs[x], start = i, stop = i)
+      left_seq <- substr(left_seqs[x], start = i, stop = i)
+      if (del_seq == left_seq) {
+        MMSeq_len <- MMSeq_len + 1
+      }else {
+        MMSeq_len <- 0
+      }
+    }
+    if (MMSeq_len == 0) {
+      return(NULL)
+    }else {
+      return(substr(del_seqs[x], start = nchar(del_seqs[x]) - MMSeq_len + 1, stop = nchar(del_seqs[x])))
+    }
+  })
+  
+  check_right <- lapply(1:length(del_seqs), function(x){
+    
+    if (nchar(right_seqs[x]) < nchar(del_seqs[x])) {
+      n_iters <- nchar(right_seqs[x])
+    }else {
+      n_iters <- nchar(del_seqs[x])
+    }
+    
+    MMSeq_len <- 0
+    
+    for (i in n_iters:1) {
+      del_seq <- substr(del_seqs[x], start = i, stop = i)
+      right_seq <- substr(right_seqs[x], start = i, stop = i)
+      if (del_seq == right_seq) {
+        MMSeq_len <- MMSeq_len + 1
+      }else {
+        MMSeq_len <- 0
+      }
+    }
+    if (MMSeq_len == 0) {
+      return(NULL)
+    }else {
+      return(substr(del_seqs[x], start = 1, stop = MMSeq_len))
+    }
+  })
+
+  MM_df <- lapply(1:length(del_seqs), function(x){
+    if (!is.null(check_left[[x]]) | !is.null(check_right[[x]])) {
+      MM_seq <- c(check_left[[x]], check_right[[x]]) %>% sort() %>% paste(collapse = ",")
+      del_seqs <- del_seqs[x]
+      df <- data.frame(MM_seq = MM_seq, del_seqs = del_seqs)
+    }else {
+      df <- data.frame(MM_seq = "NA", del_seqs = "NA")
+    }
+    return(df)
+  }) %>% dplyr::bind_rows()
+  
+  if (dim(MM_df)[1] > 1) {
+    MM_df <- MM_df[MM_df$MM_seq != "NA", ]
+  }
+
+  return(data.frame(MMSeqs = MM_df$MM_seq %>% paste(collapse = ","), DelSeqs = MM_df$del_seqs %>% paste(collapse = ",")))
+}) %>% dplyr::bind_rows()
+
+stopCluster(cl)
+
+data$DelSeqs <- MMSeq_Df$DelSeqs
+data$MMSeqs <- MMSeq_Df$MMSeqs
+data <- data[MMSeq_Df$MMSeqs != "NA", ]
+
+data$MMCount <- lapply(data$MMSeqs, function(x){
+  n_count <- stringr::str_split(x, ",") %>% unlist() %>% nchar()
+  if (length(n_count) > 1) {
+    n_count <- paste(n_count, collapse = ",")
+  }
+  return(n_count)
+}) %>% unlist()
+```
+
+```{r}
+Detect.MMEJ <- function(x, data = NULL, pb = NULL){
+  require(utils)
+  require(dplyr)
+  require(stringr)
+  
+  if (!is.null(pb)) {
+    # pb$tick()
+    utils::setTxtProgressBar(pb, value = x)
+  }
+
+  del_pos <- data$Aligned_Sequence[x] %>% stringr::str_locate_all("-+") %>% as.data.frame()
+  
+  del_seqs <- substring(data$Reference_Sequence[x], first = del_pos$start, last = del_pos$end)
+  left_seqs <- substring(data$Reference_Sequence[x], first = del_pos$start - (del_pos$end - del_pos$start) - 1, last = del_pos$start - 1)
+  right_seqs <- substring(data$Reference_Sequence[x], first = del_pos$end + 1, last = del_pos$end + (del_pos$end - del_pos$start) + 1)
+  
+  check_left <- lapply(1:length(del_seqs), function(x){
+    
+    if (nchar(left_seqs[x]) < nchar(del_seqs[x])) {
+      n_iters <- nchar(left_seqs[x])
+    }else {
+      n_iters <- nchar(del_seqs[x])
+    }
+    
+    MMSeq_len <- 0
+    
+    for (i in 1:n_iters) {
+      del_seq <- substr(del_seqs[x], start = i, stop = i)
+      left_seq <- substr(left_seqs[x], start = i, stop = i)
+      if (del_seq == left_seq) {
+        MMSeq_len <- MMSeq_len + 1
+      }else {
+        MMSeq_len <- 0
+      }
+    }
+    if (MMSeq_len == 0) {
+      return(NULL)
+    }else {
+      return(substr(del_seqs[x], start = nchar(del_seqs[x]) - MMSeq_len + 1, stop = nchar(del_seqs[x])))
+    }
+  })
+  
+  check_right <- lapply(1:length(del_seqs), function(x){
+    
+    if (nchar(right_seqs[x]) < nchar(del_seqs[x])) {
+      n_iters <- nchar(right_seqs[x])
+    }else {
+      n_iters <- nchar(del_seqs[x])
+    }
+    
+    MMSeq_len <- 0
+    
+    for (i in n_iters:1) {
+      del_seq <- substr(del_seqs[x], start = i, stop = i)
+      right_seq <- substr(right_seqs[x], start = i, stop = i)
+      if (del_seq == right_seq) {
+        MMSeq_len <- MMSeq_len + 1
+      }else {
+        MMSeq_len <- 0
+      }
+    }
+    if (MMSeq_len == 0) {
+      return(NULL)
+    }else {
+      return(substr(del_seqs[x], start = 1, stop = MMSeq_len))
+    }
+  })
+
+  MM_df <- lapply(1:length(del_seqs), function(x){
+    if (!is.null(check_left[[x]]) | !is.null(check_right[[x]])) {
+      MM_seq <- c(check_left[[x]], check_right[[x]]) %>% sort() %>% paste(collapse = ",")
+      del_seqs <- del_seqs[x]
+      df <- data.frame(MM_seq = MM_seq, del_seqs = del_seqs)
+    }else {
+      df <- data.frame(MM_seq = "NA", del_seqs = "NA")
+    }
+    return(df)
+  }) %>% dplyr::bind_rows()
+  
+  if (dim(MM_df)[1] > 1) {
+    MM_df <- MM_df[MM_df$MM_seq != "NA", ]
+  }
+
+  return(data.frame(MMSeqs = MM_df$MM_seq %>% paste(collapse = ","), DelSeqs = MM_df$del_seqs %>% paste(collapse = ",")))
+}
+
+Quant_MMEJ <- function(path, nCores = 1, proportion = "mmej"){
+  require(utils)
+  require(magrittr)
+  
+  file <- paste0(path, "/Alleles_frequency_table.zip")
+  data <- read.csv(unzip(file), header = T, sep = "\t", check.names = F)
+  data <- data[data$Read_Status == "MODIFIED" & data$n_deleted > 0 & 
+                 data$n_inserted < 1 & data$n_mutated < 1 & grepl("-", data$Aligned_Sequence, fixed = T), ]
+  indel_total_number <- data$`#Reads` %>% sum
+  
+  if (nCores == 1) {
+    # pb <- progress_bar$new(total = nrow(data), clear = FALSE)
+    pb <- utils::txtProgressBar(max = nrow(data), style = 3)
+    MMSeq_Df <- lapply(1:nrow(data), Detect.MMEJ, pb = pb, data = data) %>% dplyr::bind_rows()
+  }else {
+    cl <- parallel::makeCluster(nCores)
+    # parallel::clusterExport(cl, "data")
+    # # clusterExport(cl, "pb")
+    
+    MMSeq_Df <- parallel::parLapply(cl, 1:nrow(data), Detect.MMEJ, pb = NULL, data = data) %>% dplyr::bind_rows()
+    
+    parallel::stopCluster(cl)
+  }
+  
+  data$DelSeqs <- MMSeq_Df$DelSeqs
+  data$MMSeqs <- MMSeq_Df$MMSeqs
+  data <- data[MMSeq_Df$MMSeqs != "NA", ]
+  
+  data$MMCount <- lapply(data$MMSeqs, function(x){
+    n_count <- stringr::str_split(x, ",") %>% unlist() %>% nchar()
+    if (length(n_count) > 1) {
+      n_count <- paste(n_count, collapse = ",")
+    }
+    return(n_count)
+  }) %>% unlist()
+  
+  if (proportion == "mmej") {
+    data$`%Reads` <- data$`#Reads` / sum(data$`#Reads`) * 100
+  }else if (proportion == "indel") {
+    data$`%Reads` <- data$`#Reads` / indel_total_number * 100
+  }else {
+    stop()
+  }
+  
+  return(data)
+}
+```
+
+```{r}
+t1 <- Sys.time()
+Quant_MMEJ(path = 'inst/extdata/HT-ROSA-MMEJ_data/Reports/CRISPResso_on_Rosa-MMEJ-1and2-Cas9-1/', nCores = 1)
+t2 <- Sys.time()
+t2 - t1
+```
+

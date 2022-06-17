@@ -9,7 +9,6 @@ output: html_document
 get_ampseq <- function(path){
   json_file <- paste0(path, "/CRISPResso2_info.json")
   log_file <- paste0(path, "/CRISPResso_RUNNING_LOG.txt")
-  print(json_file)
   if (!file.exists(json_file)) {
     message(paste0("WANING: file can not found: ", json_file))
     message(paste0("WANING: trying use: ", log_file))
@@ -23,13 +22,22 @@ get_ampseq <- function(path){
     run_info <- jsonlite::read_json(path = json_file)
     amplicon_seq <- run_info$running_info$args$value$amplicon_seq
   }
+  return(amplicon_seq)
 }
 
 amplicon_seq <- get_ampseq("inst/extdata/HT-ROSA-MMEJ_data/Reports/CRISPResso_on_Rosa-MMEJ-1and2-Cas9-1")
+
+run_info <- jsonlite::read_json(path = "inst/extdata/HT-ROSA-MMEJ_data/Reports/CRISPResso_on_Rosa-MMEJ-1and2-Cas9-1/CRISPResso2_info.json")
+
+run_info$results$refs$Reference$sgRNA_cut_points[[1]]
+
+run_info$results$refs$Reference$sgRNA_intervals[[1]][[2]]
 ```
 
 
 ```{r}
+require(ggplot2)
+require(magrittr)
 MCV <- read.table("inst/extdata/HT-ROSA-MMEJ_data/Reports/CRISPResso_on_Rosa-MMEJ-1and2-Cas9-1/Modification_count_vectors.txt", sep = "\t", row.names = 1, header = T, check.names = F)
 seq_char <- colnames(MCV)
 MCV <- MCV %>% t %>% as.data.frame
@@ -40,7 +48,8 @@ max_x <- 150
 max_y <- max((MCV$Insertions + MCV$Insertions_Left) / MCV$Total, MCV$Deletions / MCV$Total, MCV$Substitutions / MCV$Total) * 100
 
 ggplot(MCV)+
-  geom_rect(aes(xmin = 60, xmax = 150, ymin = 0, ymax = max_y + 5), fill = "#F8F8FF", alpha = 0.1)+
+  geom_rect(aes(xmin = 60, xmax = 150, ymin = 0, ymax = max_y + 5), fill = "#F8F8FF")+
+  geom_rect(aes(xmin = 100, xmax = 120, ymin = 0, ymax = max_y + 5), fill = "#FFF8DC")+
   geom_vline(xintercept = 60, lty = 2, col = "grey")+
   geom_vline(xintercept = 150, lty = 2, col = "grey")+
   geom_line(aes(x = 1:length(Seq), y = (Insertions + Insertions_Left) / Total * 100, color = "Insertions"), group = 1)+
@@ -50,13 +59,63 @@ ggplot(MCV)+
   scale_x_continuous(expand=c(0,0))+
   scale_y_continuous(expand=c(0,0))+
   theme_test()+
-  theme(legend.background = element_rect(color = "grey"), 
+  theme(legend.position = "top",
+        legend.direction = "horizontal",
         legend.margin = margin(5, 5, 5, 5),
         text = element_text(size = 15))
 ```
 
 ```{r}
-plot_MCV <- function(x){
+plot_MCV <- function(path, start_pos, end_pos, show_gRNA = T){
+  require(ggplot2)
+  require(magrittr)
+  mcv_file <-  paste0(path, "/Modification_count_vectors.txt")
+  if (!file.exists(mcv_file)) {
+    stop(paste0("can not find file: ", mcv_file))
+  }
+  MCV <- read.table(mcv_file, sep = "\t", row.names = 1, header = T, check.names = F)
+  seq_char <- colnames(MCV)
+  MCV <- MCV %>% t %>% as.data.frame
+  MCV$Seq <- seq_char
   
+  max_y <- max((MCV$Insertions + MCV$Insertions_Left) / MCV$Total, MCV$Deletions / MCV$Total, MCV$Substitutions / MCV$Total) * 100
+  
+  p <- ggplot(MCV)+
+    geom_rect(aes(xmin = start_pos, xmax = end_pos, ymin = 0, ymax = max_y + 5), fill = "#F8F8FF", alpha = 0.1)
+  
+  if (show_gRNA) {
+    json_file <- paste0(path, "/CRISPResso2_info.json")
+    if (!file.exists(json_file)) {
+      stop(paste0("file can not found: ", json_file))
+    }else {
+      run_info <- jsonlite::read_json(path = json_file)
+      gRNA_start_pos <- run_info$results$refs$Reference$sgRNA_intervals[[1]][[1]]
+      gRNA_end_pos <- run_info$results$refs$Reference$sgRNA_intervals[[1]][[2]]
+      
+      p <- p + geom_rect(aes(xmin = gRNA_start_pos, xmax = gRNA_end_pos, ymin = 0, ymax = max_y + 5), fill = "#FFF8DC")
+    }
+  }
+  
+  p <- p + geom_vline(xintercept = start_pos, lty = 2, col = "grey")+
+    geom_vline(xintercept = end_pos, lty = 2, col = "grey")+
+    geom_line(aes(x = 1:length(Seq), y = (Insertions + Insertions_Left) / Total * 100, color = "Insertions"), group = 1)+
+    geom_line(aes(x = 1:length(Seq), y = Deletions / Total * 100, color = "Deletions"), group = 1)+
+    geom_line(aes(x = 1:length(Seq), y = Substitutions / Total * 100, color = "Substitutions"), group = 1)+
+    labs(color = NULL, x = "Reference amplicon position (bp)", y = "Sequences: % Total (no.)")+
+    scale_x_continuous(expand=c(0,0))+
+    scale_y_continuous(expand=c(0,0))+
+    theme_test()+
+    theme(legend.position = "top",
+          legend.direction = "horizontal",
+          legend.margin = margin(5, 5, 5, 5),
+          text = element_text(size = 15))
+  return(p)
 }
+
+plot_MCV(path = "inst/extdata/HT-ROSA-MMEJ_data/Reports/CRISPResso_on_Rosa-MMEJ-1and2-Cas9-1", start_pos = 60, end_pos = 150)
 ```
+
+```{r}
+
+```
+
